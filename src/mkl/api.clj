@@ -24,19 +24,6 @@
   ([options] (ffi/initialize! options)))
 
 
-(defn- alloc-uninitialized
-  [dtype ^long ec]
-  (-> (nbuf/malloc (* ec (casting/numeric-byte-width dtype))
-                   {:uninitialized? true})
-      (nbuf/set-native-datatype dtype)))
-
-
-(defn- alloc-zeros
-  [dtype ^long ec]
-  (-> (nbuf/malloc (* ec (casting/numeric-byte-width dtype)))
-      (nbuf/set-native-datatype dtype)))
-
-
 (defn axpy!
   "Mutable [[axpy]] placing results in rhs."
   [mult lhs rhs]
@@ -106,16 +93,18 @@ Evaluation count : 27468 in 6 samples of 4578 calls.
   [a b]
   (let [aec (dt/ecount a)
         adt (dt/elemwise-datatype a)]
-    (sub! a b (alloc-uninitialized adt aec))))
+    (sub! a b (dt/alloc-uninitialized adt aec))))
 
 
 (defn real->complex
-  [^doubles real]
+  "Convert a real buffer to an interleaved real-complex buffer - not an efficient operation."
+  [real]
   (let [rc (dt/ecount real)
-        rvec (alloc-uninitialized :float64 rc)
-        _ (copy/unsafe-copy-memory real rvec :float64 rc)
-        rval (alloc-zeros :float64 (* 2 rc))]
-    (ffi/vdUnpackI rc rvec rval 2)
+        rval (dt/alloc-zeros :float64 (* 2 rc))]
+    (resource/stack-resource-context
+     (let [rvec (dt/alloc-uninitialized :float64 rc)]
+       (dt/copy! real rvec)
+       (ffi/vdUnpackI rc rvec rval 2)))
     rval))
 
 
@@ -131,21 +120,50 @@ Evaluation count : 27468 in 6 samples of 4578 calls.
   * `domain` - either `:real` or `:complex`."
   [dtype domain ^long len]
   (let [desc (ffi/DftiCreateDescriptor dtype domain len)
-        checklen (long (case domain
-                         :real len
-                         :complex (* 2 len)))]
-    (fn [input output]
-      (when-not (and (== checklen (dt/ecount input))
-                     (== checklen (dt/ecount output)))
-        (throw (RuntimeException.
-                (format "Input,Output lens are incorrect.  Expected (%s), got %s,%s"
-                        checklen (dt/ecount input) (dt/ecount output)))))
-      (when-not (and (identical? dtype (dt/elemwise-datatype input))
-                     (identical? dtype (dt/elemwise-datatype output)))
-        (throw (RuntimeException.
-                (format "Input,Output datatypes are incorrect.  Expected (%s), got %s,%is"
-                        dtype (dt/elemwise-datatype input) (dt/elemwise-datatype output)))))
-      (ffi/DftiComputeForward desc input output))))
+        outlen (* 2 len)
+        inlen (long (case domain
+                      :real len
+                      :complex (* 2 len)))
+        input (dt/alloc-uninitialized dtype inlen)
+        output (dt/alloc-uninitialized dtype outlen)
+        filler! (if (identical? domain :real)
+                  (let [invec (dt/sub-buffer output 2 (- len 2))
+                        inlen (dt/ecount invec)
+                        in-real-end (dt/sub-buffer invec (- inlen 2))
+                        in-complex-end (dt/sub-buffer invec (- inlen 1))
+                        out-real-start (dt/sub-buffer output (+ len 2))
+                        out-complex-start (dt/sub-buffer output (+ len 3))
+                        neg1 (dt/make-container :native-heap dtype [-1])
+                        zero (dt/alloc-zeros dtype 1)
+                        n-copy (dec (quot len 2))]
+                    (fn []
+                      ;;fix complex conjugate for real data
+                      (case dtype
+                        :float32
+                        (do
+                          (ffi/vsAddI n-copy in-real-end -2 zero 0 out-real-start 2)
+                          (ffi/vsMulI n-copy in-complex-end -2 neg1 0 out-complex-start 2))
+                        :float64
+                        (do
+                          (ffi/vdAddI n-copy in-real-end -2 zero 0 out-real-start 2)
+                          (ffi/vdMulI n-copy in-complex-end -2 neg1 0 out-complex-start 2)))))
+                  (fn []))]
+    (fn [user-in]
+      (let [input (dt/ensure-native user-in input)]
+        (ffi/DftiComputeForward desc input output))
+      (filler!)
+      output)))
+
+
+(defn fft-forward
+  ([data] (fft-forward data nil))
+  ([data options]
+   (resource/stack-resource-context
+    (->
+     ((fft-forward-fn (get options :datatype :float32)
+                      (get options :domain :real)
+                      (dt/ecount data)) data)
+     (dt/->array)))))
 
 
 (defn correlation1d-fn
@@ -181,21 +199,21 @@ Evaluation count : 27468 in 6 samples of 4578 calls.
                                                                      nwin full-len full-len)))
                     (hdl-ptr 0)))
         hdl (tech.v3.datatype.ffi.Pointer. hdl-addr)
-        output (alloc-uninitialized dtype full-len)
-        input (alloc-zeros dtype full-len)
+        output (dt/alloc-uninitialized dtype full-len)
+        input (dt/alloc-zeros dtype full-len)
         sigbuffer (dt/sub-buffer input 0 nsignal)
-        kernel (alloc-uninitialized dtype nwin)
+        kernel (dt/alloc-uninitialized dtype nwin)
         retval (case mode
                  :same (dt/sub-buffer output (quot nwin 2) nsignal)
                  :full output)]
     (-> (fn [sigdata kdata]
-          (dt/copy! kdata kernel)
-          (dt/copy! sigdata sigbuffer)
-          (ffi/check-vsl
-           "Error executing correlation: "
-           (case dtype
-             :float32 (ffi/vslsCorrExec1D hdl kernel 1 input 1 output 1)
-             :float64 (ffi/vsldCorrExec1D hdl kernel 1 input 1 output 1)))
+          (let [kernel (dt/ensure-native kdata kernel)]
+            (dt/copy! sigdata sigbuffer)
+            (ffi/check-vsl
+             "Error executing correlation: "
+             (case dtype
+               :float32 (ffi/vslsCorrExec1D hdl kernel 1 input 1 output 1)
+               :float64 (ffi/vsldCorrExec1D hdl kernel 1 input 1 output 1))))
           retval)
         (resource/track {:track-type :auto
                          :dispose-fn #(resource/stack-resource-context
@@ -207,10 +225,10 @@ Evaluation count : 27468 in 6 samples of 4578 calls.
 (defn correlate1d
   "Drop in replacement for dtype-next's convolve/correlate1d pathway that is significantly
   faster for large input data and kernel values."
-  ([data kernel] (corr data kernel nil))
+  ([data kernel] (correlate1d data kernel nil))
   ([data kernel options]
    (resource/stack-resource-context
-    (dt/->array
+    (dt/->array-buffer
      ((correlation1d-fn (get options :datatype :float32)
                         (dt/ecount data) (dt/ecount kernel) options) data kernel)))))
 
@@ -220,22 +238,28 @@ Evaluation count : 27468 in 6 samples of 4578 calls.
     (def small-src (double-array (take 256 (cycle [1 2 3 4 5]))))
     (def large-src (double-array (take 8192 (cycle [1 2 3 4 5]))))
     (def large-large-src (double-array (take (* 8192 2) (cycle [1 2 3 4 5]))))
+    (def xlarge-src (double-array (take (* 8192 64) (cycle [1 2 3 4 5]))))
+    (def xlarge-native (dt/make-container :native-heap :float32 xlarge-src))
 
     (defn jfft-fn
       [^long n]
       (let [fft (DoubleFFT_1D. n)]
         (fn [src-data]
-          (let [rval (Complex/realToComplex src-data)]
+          (let [rval (Complex/realToComplex (dt/->double-array src-data))]
             (.complexForward fft rval)
             rval))))
+
+    (defn jfft
+      [data]
+      ((jfft-fn (dt/ecount data)) data))
 
     (defn mkl-fft-fn
       [^long n]
       (let [forward-fn (fft-forward-fn :float64 :complex n)
-            res (alloc-uninitialized :float64 (* 2 n))]
-        (fn [^doubles v]
+            res (dt/alloc-uninitialized :float64 (* 2 n))]
+        (fn [v]
           (resource/stack-resource-context
-           (forward-fn (real->complex v) res)))))
+           (forward-fn v res)))))
 
     (def jfft-small (jfft-fn (dt/ecount small-src)))
     (def jfft-large (jfft-fn (dt/ecount large-src)))
