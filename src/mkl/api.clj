@@ -110,11 +110,11 @@ Evaluation count : 27468 in 6 samples of 4578 calls.
 
 (defn fft-forward-fn
   "Create a function to process forward fft.  Returned function takes
-  two args, input and output and returns the output after each invocation.  Input and output
-  lengths must match len.  If domain is complex, input and output lengths must be double
+  one arg, input and returns a pre-allocated output after each invocation.  Input
+  length must match len.  If domain is complex, input  length must be double
   len.
 
-  Complex inputs are stored packed as if in a struct - r1,i1,r2,i2
+  Complex data is stored packed as if in a struct - r1,i1,r2,i2
 
   * `dtype` - either `:float32` or `:float64`.
   * `domain` - either `:real` or `:complex`."
@@ -149,13 +149,13 @@ Evaluation count : 27468 in 6 samples of 4578 calls.
                           (ffi/vdMulI n-copy in-complex-end -2 neg1 0 out-complex-start 2)))))
                   (fn []))]
     (fn [user-in]
-      (let [input (dt/ensure-native user-in input)]
-        (ffi/DftiComputeForward desc input output))
+      (ffi/DftiComputeForward desc (dt/ensure-native user-in input) output)
       (filler!)
       output)))
 
 
 (defn fft-forward
+  "Compute the forward fft.  Returns a dtype-next array buffer."
   ([data] (fft-forward data nil))
   ([data options]
    (resource/stack-resource-context
@@ -163,7 +163,7 @@ Evaluation count : 27468 in 6 samples of 4578 calls.
      ((fft-forward-fn (get options :datatype :float32)
                       (get options :domain :real)
                       (dt/ecount data)) data)
-     (dt/->array)))))
+     (dt/->array-buffer)))))
 
 
 (defn correlation1d-fn
