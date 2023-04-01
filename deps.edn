@@ -1,5 +1,5 @@
 {:paths ["src" "target/classes"]
- :deps {cnuernber/dtype-next {:mvn/version "10.000-beta-11"}
+ :deps {cnuernber/dtype-next {:mvn/version "10.000-beta-43"}
         net.java.dev.jna/jna {:mvn/version "5.12.1"}}
  :aliases
  {:dev
@@ -24,7 +24,7 @@
    :exec-args {:group-id "com.cnuernber"
                :artifact-id "mkl"
                ;;Change this also in build.clj
-               :version "1.000-beta-1"
+               :version "1.000-beta-2"
                :name "MKL"
                :description "Bare bones dynamic mkl bindings"
                :metadata {:doc/format :markdown}
