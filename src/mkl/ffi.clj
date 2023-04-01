@@ -36,6 +36,21 @@
    (into {})))
 
 
+(def real-distributions
+  "These all have same shape"
+  {"Beta" '[p q a beta]
+   "Cauchy" '[a beta]
+   "Exponential" '[a beta]
+   "Gamma" '[alpha a beta]
+   "Gaussian" '[a sigma]
+   "Gumbel" '[a beta]
+   "Laplace" '[a beta]
+   "Lognormal" '[b beta]
+   "Rayleigh" '[a beta]
+   "Uniform" '[a b]
+   "Weibull" '[alpha a beta]})
+
+
 (dt-ffi/define-library!
   libmkl
   (merge
@@ -138,7 +153,45 @@
      }
    (vecop "Add")
    (vecop "Sub")
-   (vecop "Mul"))
+   (vecop "Mul")
+   (into '{:vslNewStream {:rettype :int32
+                          :argtypes [[stream :pointer] ;;ptrptr
+                                     [brng :int32
+                                      seed :int32]]}
+           :vslDeleteStream {:rettype :int32
+                             :argtypes [[stream :pointer]] ;;ptrptr
+                             }}
+         (->> real-distributions
+              (mapcat (fn [kv]
+                        (let [[dist args] kv]
+                          [[(keyword (str "vsRng" dist))
+                            {:rettype :int32
+                             :argtypes (vec (concat
+                                             '[[method :int32]
+                                               [stream :pointer]
+                                               [nelems :int32]
+                                               [r :pointer]]
+                                             (mapv #(vector % :float32) args)))}]
+                           [(keyword (str "vdRng" dist))
+                            {:rettype :int32
+                             :argtypes (vec (concat
+                                             '[[method :int32]
+                                               [stream :pointer]
+                                               [nelems :int32]
+                                               [r :pointer]]
+                                             (mapv #(vector % :float64) args)))}]])))))
+   {:vsRngChiSquare {:rettype :int32
+                     :argytpes '[[method :int32]
+                                 [stream :pointer]
+                                 [nelems :int32]
+                                 [r :pointer]
+                                 [degfree :int32]]}
+    :vdRngChiSquare {:rettype :int32
+                     :argytpes '[[method :int32]
+                                 [stream :pointer]
+                                 [nelems :int32]
+                                 [r :pointer]
+                                 [degfree :int32]]}})
   nil
   nil)
 
@@ -196,7 +249,7 @@
      (.DftiFreeDescriptor (Dfti) (ffi-jna/ptr-value hdl-ptr)))))
 
 
-(defmacro ^:private check-dfti
+(defmacro check-dfti
   [msg & code]
   `(let [res# (do ~@code)]
      (when-not (== 0 res#)
@@ -249,3 +302,68 @@
   `(let [rval# (do ~@code)]
      (when-not (== rval# 0)
        (throw (RuntimeException. (str ~msg rval#))))))
+
+
+(def VSL_RNG_METHOD_ACCURACY_FLAG (bit-shift-left 1 30))
+(def VSL_RNG_METHOD_STD 0)
+(def VSL_RNG_METHOD_STD_ACCURATE (bit-or VSL_RNG_METHOD_ACCURACY_FLAG VSL_RNG_METHOD_STD))
+(def VSL_RNG_METHOD_UNIFORMBITS_STD 0)
+(def VSL_RNG_METHOD_UNIFORMBITS32_STD 0)
+(def VSL_RNG_METHOD_UNIFORMBITS64_STD 0)
+(def VSL_RNG_METHOD_GAUSSIAN_BOXMULLER 0)
+(def VSL_RNG_METHOD_GAUSSIAN_BOXMULLER2 1)
+(def VSL_RNG_METHOD_GAUSSIAN_ICDF 2)
+(def VSL_RNG_METHOD_EXPONENTIAL_ICDF 0)
+(def VSL_RNG_METHOD_EXPONENTIAL_ICDF_ACCURATE (bit-or VSL_RNG_METHOD_ACCURACY_FLAG VSL_RNG_METHOD_EXPONENTIAL_ICDF))
+
+
+(def VSL_BRNG_SHIFT      20)
+(def VSL_BRNG_INC        (bit-shift-left 1 VSL_BRNG_SHIFT))
+
+(def VSL_BRNG_MCG31          VSL_BRNG_INC)
+(def VSL_BRNG_R250           (+ VSL_BRNG_MCG31 VSL_BRNG_INC))
+(def VSL_BRNG_MRG32K3A       (+ VSL_BRNG_R250 VSL_BRNG_INC))
+(def VSL_BRNG_MCG59          (+ VSL_BRNG_MRG32K3A VSL_BRNG_INC))
+(def VSL_BRNG_WH             (+ VSL_BRNG_MCG59 VSL_BRNG_INC))
+(def VSL_BRNG_SOBOL          (+ VSL_BRNG_WH VSL_BRNG_INC))
+(def VSL_BRNG_NIEDERR        (+ VSL_BRNG_SOBOL VSL_BRNG_INC))
+(def VSL_BRNG_MT19937        (+ VSL_BRNG_NIEDERR  VSL_BRNG_INC))
+(def VSL_BRNG_MT2203         (+ VSL_BRNG_MT19937  VSL_BRNG_INC))
+(def VSL_BRNG_IABSTRACT      (+ VSL_BRNG_MT2203 VSL_BRNG_INC))
+(def VSL_BRNG_DABSTRACT      (+ VSL_BRNG_IABSTRACT VSL_BRNG_INC))
+(def VSL_BRNG_SABSTRACT      (+ VSL_BRNG_DABSTRACT VSL_BRNG_INC))
+(def VSL_BRNG_SFMT19937      (+ VSL_BRNG_SABSTRACT VSL_BRNG_INC))
+(def VSL_BRNG_NONDETERM      (+ VSL_BRNG_SFMT19937 VSL_BRNG_INC))
+(def VSL_BRNG_ARS5           (+ VSL_BRNG_NONDETERM VSL_BRNG_INC))
+(def VSL_BRNG_PHILOX4X32X10  (+ VSL_BRNG_ARS5 VSL_BRNG_INC))
+
+
+(def rngs
+  (clojure.set/map-invert {VSL_BRNG_MCG31         :mcg31
+                           VSL_BRNG_R250          :r250
+                           VSL_BRNG_MRG32K3A      :mrg32k3a
+                           VSL_BRNG_MCG59         :mcg59
+                           VSL_BRNG_WH            :wh
+                           VSL_BRNG_SOBOL         :sobol
+                           VSL_BRNG_NIEDERR       :niederr
+                           VSL_BRNG_MT19937       :mt19937
+                           VSL_BRNG_MT2203        :mt2203
+                           VSL_BRNG_IABSTRACT     :iabstract
+                           VSL_BRNG_DABSTRACT     :dabstract
+                           VSL_BRNG_SABSTRACT     :sabstract
+                           VSL_BRNG_SFMT19937     :sfmt19937
+                           VSL_BRNG_NONDETERM     :nondeterm
+                           VSL_BRNG_ARS5          :ars5
+                           VSL_BRNG_PHILOX4X32X10 :philox4x32x10 }))
+
+
+(def distributions
+  (->> (merge real-distributions
+              {"ChiSquared" '[degfree]})
+       (map (fn [kv]
+              [(keyword (.toLowerCase ^String (key kv)))
+               {:name (key kv)
+                :fns {:float64 (resolve (symbol (str "vdRng" (key kv))))
+                      :float32 (resolve (symbol (str "vsRng" (key kv))))}
+                :arguments (val kv)}]))
+       (into {})))

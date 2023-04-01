@@ -10,7 +10,8 @@
             [tech.v3.resource :as resource]
             [ham-fisted.api :as hamf])
   (:import [org.jtransforms.fft DoubleFFT_1D]
-           [tech.v3.datatype Complex]))
+           [tech.v3.datatype Complex]
+           [tech.v3.datatype.ffi Pointer]))
 
 
 (set! *warn-on-reflection* true)
@@ -231,6 +232,68 @@ Evaluation count : 27468 in 6 samples of 4578 calls.
     (dt/->array-buffer
      ((correlation1d-fn (get options :datatype :float32)
                         (dt/ecount data) (dt/ecount kernel) options) data kernel)))))
+
+
+(defn all-rngs
+  []
+  (keys ffi/rngs))
+
+(defn all-distributions
+  []
+  (->> ffi/distributions
+       (map (fn [[dist-name dst-data]]
+              [dist-name (:arguments dst-data)]))
+       (into {})))
+
+
+(defn rng-stream
+  "Return a function that when called returns a new batch of random numbers.  Returns the same native buffer
+  on every call.  The values of (all-distributions) state the name of the optional arguments and their
+  order.
+
+  Options:
+
+  Note that the distribution arguments *must* be provided in the optional arguments map.  See the documentation
+  for various [mkl distribution functions](https://www.intel.com/content/www/us/en/docs/onemkl/developer-reference-c/2023-0/distribution-generators.html) for their definitions.
+
+
+  * `:datatype` - defaults to :float64.
+  * `:seed` - unsigned integer - defaults to unchecked integer cast of system/nanoTime if not provided.
+  * `:rng` - one of (all-rngs) - defaults to :sfmt19937
+  * `:dist` - one of the keys of (all-distributions).  Defaults to :uniform."
+  ([^long n {:keys [seed rng dist datatype]
+             :or {rng :sfmt19937
+                  dist :uniform
+                  datatype :float64}
+             :as options}]
+   (let [seed (unchecked-int (or seed (System/nanoTime)))
+         rng-val (ffi/rngs rng)
+         dist-map (ffi/distributions dist)
+         _ (when-not dist-map
+             (throw (RuntimeException. (str "Unrecognized distribution: " dist))))
+         dist-args (:arguments dist-map)
+         dist-name (:name dist-map)
+         dist-fn (get-in dist-map [:fns datatype])
+         _ (when-not dist-fn
+             (throw (RuntimeException. (str "Distribution does not have function for datatype:" datatype))))
+         stream-ptr (dt-ffi/make-ptr :pointer 0)
+         _ (ffi/check-dfti "Failed to create stream: " (ffi/vslNewStream stream-ptr rng-val))
+         stream (Pointer. (stream-ptr 0))
+         result-vec (dt/alloc-uninitialized datatype n)
+         argvec (->> dist-args
+                     (mapv (fn [sym]
+                             (if-let [argval (get options (keyword (name sym)))]
+                               argval
+                               (throw (RuntimeException. (format "Failed to find argument %s for dist %s"
+                                                                 sym dist)))))))]
+     (resource/track
+      (case (count argvec)
+        1 (fn [] (dist-fn 0 stream n result-vec (argvec 0)) result-vec)
+        2 (fn [] (dist-fn 0 stream n result-vec (argvec 0) (argvec 1)) result-vec)
+        3 (fn [] (dist-fn 0 stream n result-vec (argvec 0) (argvec 1) (argvec 2)) result-vec)
+        4 (fn [] (dist-fn 0 stream n result-vec (argvec 0) (argvec 1) (argvec 2) (argvec 3)) result-vec))
+      {:track-type :auto
+       :dispose-fn #(ffi/vslDeleteStream stream-ptr)}))))
 
 
 (comment
