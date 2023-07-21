@@ -118,7 +118,30 @@ Evaluation count : 27468 in 6 samples of 4578 calls.
   Complex data is stored packed as if in a struct - r1,i1,r2,i2
 
   * `dtype` - either `:float32` or `:float64`.
-  * `domain` - either `:real` or `:complex`."
+  * `domain` - either `:real` or `:complex`.
+
+  Example:
+
+```clojure
+user> (require '[cnuernber.mkl :as mkl])
+Execution error (FileNotFoundException) at user/eval5625 (REPL:43).
+Could not locate cnuernber/mkl__init.class, cnuernber/mkl.clj or cnuernber/mkl.cljc on classpath.
+user> (require '[mkl.api :as mkl])
+nil
+user> (mkl/initialize!)
+#object[com.sun.proxy.$Proxy3 0x56dd4be7 \"Proxy interface to Native Library <libmkl_rt.so@139886755541424>\"]
+user> (def data (take 100 (cycle [1 2 3 4 5])))
+#'user/data
+user> (def fft-fn (mkl/fft-forward-fn :float32 :real 100))
+#'user/fft-fnJul 21, 2023 3:27:56 PM clojure.tools.logging$eval5978$fn__5981 invoke
+INFO: Reference thread starting
+
+user> (def res (fft-fn data))
+#'user/res
+user> res
+#native-buffer@0x00007F39ED2F22D0<float32>[200]
+[300.0, 0.000, 0.000, 0.000, 3.104E-07, -3.306E-07, 0.000, 0.000, 1.885E-07, 3.595E-08, 0.000, 0.000, 1.808E-07, -9.941E-08, 0.000, 0.000, -1.462E-07, 1.847E-08, 0.000, 0.000...]
+```"
   [dtype domain ^long len]
   (let [desc (ffi/DftiCreateDescriptor dtype domain len)
         outlen (* 2 len)
@@ -156,7 +179,9 @@ Evaluation count : 27468 in 6 samples of 4578 calls.
 
 
 (defn fft-forward
-  "Compute the forward fft.  Returns a dtype-next array buffer."
+  "Compute the forward fft.  Returns a dtype-next array buffer.  For options see [[fft-forward-fn]].
+  It is a bit faster to use fft-forward-fn and then use the returned function as this initializes
+  an fft context only once and reuses it."
   ([data] (fft-forward data nil))
   ([data options]
    (resource/stack-resource-context
