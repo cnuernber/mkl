@@ -22,4 +22,4 @@ See [api.clj](src/mkl/api.clj) for fft example.  The random number generation do
 have good docs :-).
 
 
-* [API Docs](cnuernber.github.io/mkl)
+* [API Docs](https://cnuernber.github.io/mkl/)
